@@ -1,14 +1,23 @@
 ref_gtf='ref/gencode_annotation_v37.gtf'
 ref_genome='ref/gencode_genome_v37.fa'
 chr_names= '/data/swamyvs/pacbio_testing/ref/chr_fasta_entries.txt'
-
+variants= '/data/swamyvs/pacbio_testing/ref/encode_variants.vcf.gz'
 
 rule all:
     input: 
-        'data/combined_gtfs/ipscRPE-pacbio-ONT_talon_vs_st.combined.gtf',
-        expand('data/fasta_lengths/{sample}.tsv',sample =['ONT_RNA_RPE_D42_all', 'pacbio_RNA_RPE_D42_all'])
+        expand('data/talon_results/{sample}/{sample}_talon_observedOnly.gtf',sample =['ONT_RNA_RPE_D42_all', 'pacbio_RNA_RPE_D42_all','bonito-ont_RNA_RPE_D42_all']), 
+        expand('data/fasta_lengths/{sample}.tsv',sample =['ONT_RNA_RPE_D42_all', 'pacbio_RNA_RPE_D42_all','bonito-ont_RNA_RPE_D42_all']),
+        'data/combined_gtfs/ipscRPE-pacbio-ONT_talon_vs_st.combined.gtf'
         
        
+##Note: this was not run through Snakemake
+rule bonito_basecall:
+    output:'fastq/bonito-ont_RNA_RPE_D42_all.fastq.gz'
+    shell:
+        '''
+        module load bonito/0.3.6
+        bonito basecaller --fastq dna_r9.4.1 /data/OGVFB_BG/iPSC_RPE_ONT_RNA-seq/fast5_pass/ | gzip -c - > fastq/bonito-ont_RNA_RPE_D42_all.fastq.gz
+        '''
 
 #### build transcriptomes 
 
@@ -91,14 +100,13 @@ rule align_minimap2:
         idx='data/index/minimap2_index.mmi', 
         genome = 'ref/gencode_genome_clean.fa'
     output:
-        sam='data/sams/{sample}.sam',
-        bam='data/bams/{sample}.bam'
+        sam='data/sams/{sample}.sam'
     shell:
         '''
         module load minimap2/2.18
         module load samtools/1.11
         minimap2 -t 8 -a -x splice -u f --MD  {input.genome} {input.fa} | samtools sort -O sam - > {output.sam}
-        samtools view -S -b {output.sam} > {output.bam}
+        
         '''
         
 '''
@@ -116,6 +124,55 @@ rule deprime_sams:
         '''
         talon_label_reads --f {input.sam} --g {ref_genome} --o {params.prefix}
         '''
+
+# rule make_spliceJN_file:
+#     input:
+#         gtf=ref_gtf, 
+#         genome = 'ref/gencode_genome_clean.fa'
+#     output:
+#         'data/SJ_tab.txt'
+#     shell:
+#         '''
+#         module load samtools/1.11
+#         module load  bedtools/2.30.0 
+#         python TranscriptClean/accessory_scripts/get_SJs_from_gtf.py --f {input.gtf} --g {input.genome} --o {output}
+
+#         '''
+
+
+# rule TranscriptClean: # pull from github repo
+#     input: 
+#         sam = 'data/sams/{sample}_labeled.sam', 
+#         genome = 'ref/gencode_genome_clean.fa'
+#     params:
+#         out_pref=lambda wildcards: f'data/sams/{wildcards.sample}',
+#         tmp_dir=lambda wildcards: f'data/tmp/{wildcards.sample}/'
+#     output:
+#         sam='data/sams/{sample}_clean.sam',
+#         bam='data/bams/{sample}.bam'
+#     shell:
+#         '''
+#         rm -rf {params.tmp_dir}
+#         module load samtools/1.11
+#         module load bedtools/2.30.0 
+#         /data/swamyvs/anaconda3/envs/ipsc_lr/bin/python TranscriptClean/TranscriptClean.py --sam {input.sam} \
+#             --genome {input.genome}  \
+#             --variants {variants}\
+#             --maxLenIndel 5 \
+#             --maxSJOffset 5 \
+#             --correctMismatches true \
+#             --correctIndels true \
+#             --primaryOnly \
+#             --outprefix {params.out_pref} \
+#             --tmpDir {params.tmp_dir} \
+#             --deleteTmp \
+#             --threads 32 
+#         samtools view -S -b {output.sam} > {output.bam}
+#         '''
+
+
+
+
 
 rule run_talon:
     input: 
@@ -144,7 +201,7 @@ rule run_talon:
             --f $tlncfg \
             --db $fp/{input.db} \
             --build {input.genome} \
-            --threads 8 \
+            --threads 16 \
             --o $fp/{params.res_outdir}
         
         talon_create_GTF \
@@ -159,8 +216,7 @@ rule run_talon:
             --build {input.genome} \
             --annot {params.prefix} \
             --o $fp/{params.outdir_pf}
-        
-         
+
         '''
 
 
@@ -170,16 +226,18 @@ rule run_stringtie:
         bam='data/bams/{sample}.bam'
     output: 
         'data/stringtie/{sample}.gtf'
+    params:
+        tag = lambda wildcards: wildcards.sample.split('_')[0]
     shell:
         '''
         module load stringtie/2.1.5
-        stringtie -L -G {input.gtf} -o {output} {input.bam}
+        stringtie -L -G {input.gtf} -p 8 -l {params.tag} -o {output} {input.bam}
         '''
 
 rule merge_all_gtfs:
     input:  
-        talon_gtfs = expand('data/talon_results/{sample}/{sample}_talon_observedOnly.gtf',sample =['ONT_RNA_RPE_D42_all', 'pacbio_RNA_RPE_D42_all'] ),
-        string_tie_gtfs = expand('data/stringtie/{sample}.gtf',sample =['ONT_RNA_RPE_D42_all', 'pacbio_RNA_RPE_D42_all'] )
+        talon_gtfs = expand('data/talon_results/{sample}/{sample}_talon_observedOnly.gtf',sample =[ 'pacbio_RNA_RPE_D42_all', 'bonito-ont_RNA_RPE_D42_all'] ),
+        string_tie_gtfs = expand('data/stringtie/{sample}.gtf',sample =['pacbio_RNA_RPE_D42_all', 'bonito-ont_RNA_RPE_D42_all'] )
     params:
         merge_prefix =lambda wildcards: f'data/combined_gtfs/ipscRPE-pacbio-ONT_talon_vs_st',
         label_prefix = 'ipscRPE'
@@ -190,3 +248,14 @@ rule merge_all_gtfs:
         module load gffcompare/0.11.8
         gffcompare --strict-match -e 0 -d 0  -r {ref_gtf} -p {params.label_prefix} -o  {params.merge_prefix} {input.talon_gtfs} {input.string_tie_gtfs}
         '''
+
+'''
+Run this to merge this long read data with old short read data
+module load gffcompare/0.11.8
+ k=`ls ../ocular_transcriptomes_longread_analysis/data/stringtie/H*.gtf`
+ gffcompare --strict-match -e 0 -d 0  -r ref/gencode_annotation_v37.gtf  -p ipscRPE -o  data/combined_gtfs/lr_sr_merged  \
+  'data/talon_results/pacbio_RNA_RPE_D42_all/pacbio_RNA_RPE_D42_all_talon_observedOnly.gtf' \
+  'data/talon_results/bonito-ont_RNA_RPE_D42_all/bonito-ont_RNA_RPE_D42_all_talon_observedOnly.gtf' \
+  'data/stringtie/pacbio_RNA_RPE_D42_all.gtf' \
+  'data/stringtie/bonito-ont_RNA_RPE_D42_all.gtf' $k
+'''

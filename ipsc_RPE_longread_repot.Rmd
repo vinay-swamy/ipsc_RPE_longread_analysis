@@ -1,0 +1,200 @@
+---
+title: "iPSC RPE long read RNA-seq tech type comparison"
+output: html_notebook
+---
+
+```{r setup}
+knitr::opts_chunk$set(echo = F, include = F, message = F, warning=F)
+```
+
+
+I'm comparing ONT vs PacBio long-read cDNA-based RNA-seq. For ONT, I have two versions of the data, one base called with Guppy(ONT-guppy), and another with bonito(ONT-bonito). Guppy is the default basecaller, and bonito is a newer, experimental one. 
+
+The current workflow:
+
+align with minimap2 > remove internally primed reads(talon) > call isofroms and quantify expression(talon OR stringtie)
+
+
+```{r}
+library(tidyverse)
+library(ggrepel)
+library(ComplexUpset)
+all_read_lengths <- bind_rows(
+  data.table::fread('data/fasta_lengths/bonito-ont_RNA_RPE_D42_all.tsv', header=F) %>% as.data.frame %>% mutate(`Tech Type` = 'ONT-bonito'),
+  data.table::fread('data/fasta_lengths/ONT_RNA_RPE_D42_all.tsv', header=F) %>% as.data.frame %>% mutate(`Tech Type` = 'ONT-guppy'),
+  data.table::fread('data/fasta_lengths/pacbio_RNA_RPE_D42_all.tsv', header = F) %>% as.data.frame %>% mutate(`Tech Type` = 'pacbio')
+)
+total_reads <- all_read_lengths %>% group_by(`Tech Type`) %>% count %>% mutate(lab = paste0('n=', n), y=15050)
+
+all_talon_qc <- bind_rows(
+  data.table::fread('data/talon_results/ONT_RNA_RPE_D42_all/talon_QC.log', skip='#') %>% as.data.frame %>% 
+    mutate(fraction_aligned = replace_na(fraction_aligned, 0), `Tech Type` = 'ONT-guppy') %>% select(`Tech Type`, fraction_aligned),
+  data.table::fread('data/talon_results/bonito-ont_RNA_RPE_D42_all/talon_QC.log', skip='#') %>% as.data.frame %>%
+    mutate(fraction_aligned = replace_na(fraction_aligned, 0), `Tech Type` = 'ONT-bonito') %>% select(`Tech Type`, fraction_aligned),
+  data.table::fread('data/talon_results/pacbio_RNA_RPE_D42_all/talon_QC.log', skip='#') %>% as.data.frame %>% 
+    mutate(fraction_aligned = replace_na(fraction_aligned, 0), `Tech Type` = 'pacbio') %>% select(`Tech Type`, fraction_aligned),
+)
+talon_reads_pass_qc <- all_talon_qc %>% 
+  group_by(`Tech Type`) %>% 
+  summarise(total_reads = n(),
+            read_pass_qc = sum( fraction_aligned >=.9)) %>% 
+  mutate(frac_pass_qc =read_pass_qc/total_reads ) %>% 
+  select(`Tech Type`, `Fraction of  reads passing alignment QC` =frac_pass_qc )
+combined_gtf <- rtracklayer::readGFF('data//combined_gtfs/ipscRPE-pacbio-ONT_talon_vs_st.combined.gtf')
+
+tracking_tab <- data.table::fread('data//combined_gtfs/ipscRPE-pacbio-ONT_talon_vs_st.tracking', header = F)
+
+det_df <- apply(tracking_tab[,5:8], 2, function(x) x!='-') %>% as.data.frame  
+colnames(det_df) <- c('pacbio-talon', 'ont-talon', 'pacbio-st', 'ont-st')
+det_df <- det_df %>% 
+  mutate(transcript_id = tracking_tab$V1, class_code = tracking_tab$V4) %>% select(transcript_id, class_code, everything())
+ddf_long_algo_comp <-  det_df %>% mutate(detype= case_when(
+  `pacbio-st` & `pacbio-talon` ~ 'PacBio-In Both',
+  `ont-st` & `ont-talon` ~ 'ONT-In Both',
+  `pacbio-st` & (!`pacbio-talon`) ~ 'PacBio-StringTie',
+  (!`pacbio-st`) & (`pacbio-talon`) ~ 'PacBio-Talon',
+  `ont-st` & (!`ont-talon`) ~ 'ONT-StringTie',
+  (!`ont-st`) & (`ont-talon`) ~ 'ONT-Talon'
+  )) %>% 
+  pivot_longer(-c(transcript_id, class_code, detype), values_to = 'det') %>% filter(det) %>% 
+  mutate(`Tech Type` = str_split(detype, '-') %>% sapply(function(x)x[1]), 
+         `Isoform Algo` =str_split(detype, '-') %>% sapply(function(x)x[2]))
+
+
+ddf_long_tech_comp <-  det_df %>% mutate(detype= case_when(
+  `pacbio-st` & `ont-st` ~ 'StringTie-In Both',
+   `pacbio-talon` & `ont-talon` ~ 'Talon-In Both',
+  `pacbio-st` & (!`ont-st`) ~ 'StringTie-PacBio',
+  (!`pacbio-talon`) & (`ont-talon`) ~ 'Talon-ONT',
+  `ont-st` & (!`pacbio-st`) ~ 'StringTie-ONT',
+  (!`ont-talon`) & (`pacbio-talon`) ~ 'Talon-PacBio'
+  )) %>% 
+  pivot_longer(-c(transcript_id, class_code, detype), values_to = 'det') %>% filter(det) %>% 
+  mutate(`Tech Type` = str_split(detype, '-') %>% sapply(function(x)x[2]), 
+         `Isoform Algo` =str_split(detype, '-') %>% sapply(function(x)x[1]))
+
+lr_sr_gtf <- rtracklayer::readGFF('data/combined_gtfs/lr_sr_merged.combined.gtf')
+
+lr_sr_ttab <-  data.table::fread('data//combined_gtfs/lr_sr_merged.tracking', header = F)
+lr_sr_ddf <- apply(lr_sr_ttab[,5:8], 2, function(x) x!='-') 
+colnames(lr_sr_ddf) <- c('pacbio-talon', 'ONT_bonito-talon', 'pacbio-st', 'ONT_bonito-st')
+lr_sr_ddf_complete <-lr_sr_ddf %>% as.data.frame() %>%  mutate(transcript_id = lr_sr_ttab$V1, 
+                                 class_code = lr_sr_ttab$V4,
+                                 n_det_sr = apply(lr_sr_ttab[,9:20], 2, function(x) x!='-') %>% rowSums,
+                                 ) %>% select(transcript_id, class_code, everything())
+
+
+lr_sr_ddf_complete %>% filter()
+```
+
+Read lengths(from unfiltered fastq):
+
+```{r, include=TRUE}
+ggplot(all_read_lengths) + 
+  geom_violin(aes(x=`Tech Type`, y=V2, fill = `Tech Type`)) + 
+  ylim(c(0,15100))+
+  geom_label(data=total_reads,aes(x=`Tech Type`, y= y, label=lab) )+ 
+  ylab('Read Lengths') + 
+  theme_minimal()
+```
+
+Minimap2 mapping rate.
+
+```{r}
+tibble(`Tech Type` = c('ONT-guppy', 'ONT-bonito', 'pacbio'), `Mapping Rate` = c('89.37%', '89.50%','99.99%'))
+```
+
+
+## Isoform identification
+
+I'm using two methods for identifying isoforms:
+
+**Talon**
+
+- Considers each read to be a distinct transcipt, and infers isoform structure directly from sequence of aligned read. This methods is more accurate but needs high quality sequencing, specifically requiring at least 90% of a read to be aligned to the genome.
+
+**StringTie**
+
+-  uses distribution of coverage across genome to infer isoform structure. This method is more error prone, but doesn't need require reads to be fully aligned.
+
+
+```{r, include=TRUE}
+ggplot() + 
+  geom_histogram(data =all_talon_qc, aes(x=fraction_aligned ,fill = `Tech Type`), alpha = .5, bins=60) +
+  geom_label_repel(data=tibble(x=.9, y=4e6,label = 'Minimum threshold \nfor further analysis'), aes(x=x,y=y, label=label), nudge_x = -.15)+
+  geom_vline(xintercept = .9, color = 'red')+
+  xlab('Fraction of individual read aligned') +
+  ylab('Number of Reads') +
+  theme_minimal()
+```
+```{r}
+talon_reads_pass_qc
+```
+
+Because of the poor quality of ONT-guppy, it won't be used for further analysis
+
+
+Similarity in isoform construction between algo's
+
+```{r, include = T}
+
+ggplot(ddf_long) + 
+  geom_bar(aes(x=`Tech Type`, fill = `Isoform Algo`), width = .1) + 
+  theme_minimal()
+```
+
+From a guess, I think StringTie is a little more conservative with assigning new transcripts, whereas the Talon assigns gthe 
+
+
+```{r}
+ggplot(ddf_long_tech_comp) + 
+  geom_bar(aes(x=`Isoform Algo`, fill =`Tech Type` ), width = .1) + 
+  theme_minimal()
+```
+
+
+## Picking Transcripts to keep
+
+Using some old short read samples, for the final transcriptome, keeping transcripts detected in at least one short read and one long read sample 
+
+```{r}
+library(RBedtools)
+all_data_trackfile <- data.table::fread('data/combined_gtfs/lr_sr_merged.tracking', header = F)
+all_data_gtf <- rtracklayer::readGFF('data/combined_gtfs/lr_sr_merged.combined.gtf')
+ref_gtf <- rtracklayer::readGFF('ref/gencode_annotation_v37.gtf')
+one_lr_talon <- all_data_trackfile %>% as.data.frame %>% {.$V5 != '-' | .$V6 !='-'}
+#one_lr_st <- all_data_trackfile %>% as.data.frame %>% {.$V7 != '-' | .$V8 !='-'}
+one_sr <- all_data_trackfile %>% as.data.frame %>% select(V9:V20) %>% apply(2, function(x) x!='-') %>% 
+  {rowSums(.) >= 1}
+talon_sr_lr_pass <- one_sr & one_lr_talon
+#st_sr_lr_pass <- one_sr & one_lr_st
+talon_sr_lr_pass_ttab <-  all_data_trackfile[talon_sr_lr_pass, ] %>% as.data.frame
+talon_sr_lr_pass_ttab %>% pull(V4) %>% table
+talon_sr_lr_pass_gtf <- all_data_gtf %>% as.data.frame %>% filter(transcript_id %in% talon_sr_lr_pass_ttab$V1)
+
+talon_sr_lr_pass_gtf_novel_loci <-talon_sr_lr_pass_ttab %>% 
+  dplyr::filter(V4 == 'u')
+
+ref_tx_bed <-  ref_gtf %>% filter(type == 'transcript') %>% mutate(score=100,start = start-5000, end = end + 5000) %>% select(seqid, start, end, transcript_id, score, strand) %>% 
+  from_data_frame %>% 
+  RBedtools('sort', i=.)
+talon_sr_lr_pass_ttab %>% 
+  dplyr::filter(V4 == 'u') %>% pull(V1) %>% 
+  {filter(talon_sr_lr_pass_gtf, transcript_id %in% . )} %>% 
+  filter(type == 'exon') %>% 
+  group_by(transcript_id) %>% count %>% pull(n) %>% table
+novel_loci_bed <- talon_sr_lr_pass_ttab %>% 
+  dplyr::filter(V4 == 'u') %>% pull(V1) %>% 
+  {filter(talon_sr_lr_pass_gtf, transcript_id %in% . )} %>% 
+  filter(type == 'transcript') %>% 
+  mutate(score = 999) %>% 
+  select(seqid, start, end, transcript_id, score, strand) %>% 
+  from_data_frame %>% 
+  RBedtools('sort', i=.)
+
+ RBedtools('intersect', options = '-s -v', a=novel_loci_bed, b=ref_tx_bed) %>% to_data_frame %>% View
+
+```
+
+
+
