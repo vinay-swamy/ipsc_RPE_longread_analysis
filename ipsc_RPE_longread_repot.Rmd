@@ -175,7 +175,10 @@ talon_sr_lr_pass_gtf <- all_data_gtf %>% as.data.frame %>% filter(transcript_id 
 talon_sr_lr_pass_gtf_novel_loci <-talon_sr_lr_pass_ttab %>% 
   dplyr::filter(V4 == 'u')
 
-ref_tx_bed <-  ref_gtf %>% filter(type == 'transcript') %>% mutate(score=100,start = start-5000, end = end + 5000) %>% select(seqid, start, end, transcript_id, score, strand) %>% 
+load('/data/swamyvs/ocular_transcriptomes_pipeline/ref/rdata/all_ref_tx_exons.rdata')
+ref_tx_bed <- all_transcripts %>% 
+  mutate(score = 100, start = start-5000, end=end+5000, start = replace(start, start<1, 1)) %>% 
+  select(seqid, start, end, origin, score, strand) %>% 
   from_data_frame %>% 
   RBedtools('sort', i=.)
 talon_sr_lr_pass_ttab %>% 
@@ -192,9 +195,16 @@ novel_loci_bed <- talon_sr_lr_pass_ttab %>%
   from_data_frame %>% 
   RBedtools('sort', i=.)
 
- RBedtools('intersect', options = '-s -v', a=novel_loci_bed, b=ref_tx_bed) %>% to_data_frame %>% View
+res <- RBedtools('intersect', options = '-s -v', a=novel_loci_bed, b=ref_tx_bed) %>% to_data_frame
 
 ```
 
 
+```{r}
+
+{filter(talon_sr_lr_pass_gtf, transcript_id %in% res$X4  )} %>% 
+  filter(type == 'exon') %>% 
+  group_by(transcript_id) %>% count %>% pull(n) %>% table
+
+```
 

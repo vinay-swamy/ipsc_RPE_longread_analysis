@@ -7,7 +7,7 @@ rule all:
     input: 
         expand('data/talon_results/{sample}/{sample}_talon_observedOnly.gtf',sample =['ONT_RNA_RPE_D42_all', 'pacbio_RNA_RPE_D42_all','bonito-ont_RNA_RPE_D42_all']), 
         expand('data/fasta_lengths/{sample}.tsv',sample =['ONT_RNA_RPE_D42_all', 'pacbio_RNA_RPE_D42_all','bonito-ont_RNA_RPE_D42_all']),
-        'data/combined_gtfs/ipscRPE-pacbio-ONT_talon_vs_st.combined.gtf'
+        'data/combined_gtfs/ipscRPE_lr_sr.combined.gtf'
         
        
 ##Note: this was not run through Snakemake
@@ -28,7 +28,6 @@ rule get_annotation:
     shell:
         '''
         wget -O - ftp://ftp.ebi.ac.uk/pub/databases/gencode/Gencode_human/release_37/gencode.v37.annotation.gtf.gz | gunzip -c - > {output.gtf}
-
 
         wget -O - ftp://ftp.ebi.ac.uk/pub/databases/gencode/Gencode_human/release_37/GRCh38.primary_assembly.genome.fa.gz | gunzip -c - > {output.genome}
         
@@ -71,7 +70,6 @@ rule build_talon_db:
         'data/talon_db/{sample}.db'
     shell:
         '''
-
         talon_initialize_database \
             --f {input.gtf} --g {input.genome} \
             --a {params.anno_name} \
@@ -239,14 +237,15 @@ rule merge_all_gtfs:
         talon_gtfs = expand('data/talon_results/{sample}/{sample}_talon_observedOnly.gtf',sample =[ 'pacbio_RNA_RPE_D42_all', 'bonito-ont_RNA_RPE_D42_all'] ),
         string_tie_gtfs = expand('data/stringtie/{sample}.gtf',sample =['pacbio_RNA_RPE_D42_all', 'bonito-ont_RNA_RPE_D42_all'] )
     params:
-        merge_prefix =lambda wildcards: f'data/combined_gtfs/ipscRPE-pacbio-ONT_talon_vs_st',
+        merge_prefix ='data/combined_gtfs/ipscRPE_lr_sr',
         label_prefix = 'ipscRPE'
     output: 
-        all_merge_gtf = 'data/combined_gtfs/ipscRPE-pacbio-ONT_talon_vs_st.combined.gtf'
+        all_merge_gtf = 'data/combined_gtfs/ipscRPE_lr_sr.combined.gtf'
     shell:
         '''
+        k=`ls /data/swamyvs/ocular_transcriptomes_longread_analysis/data/stringtie/H*.gtf`
         module load gffcompare/0.11.8
-        gffcompare --strict-match -e 0 -d 0  -r {ref_gtf} -p {params.label_prefix} -o  {params.merge_prefix} {input.talon_gtfs} {input.string_tie_gtfs}
+        gffcompare --strict-match -e 0 -d 0  -r {ref_gtf} -p {params.label_prefix} -o  {params.merge_prefix} {input.talon_gtfs} {input.string_tie_gtfs} $k
         '''
 
 '''
@@ -259,3 +258,95 @@ module load gffcompare/0.11.8
   'data/stringtie/pacbio_RNA_RPE_D42_all.gtf' \
   'data/stringtie/bonito-ont_RNA_RPE_D42_all.gtf' $k
 '''
+
+
+
+
+# rule make_tx_fasta:
+#     input: 
+#         tool = 'gffread/gffread', 
+#         gtf = lambda wildcards: make_tx_fasta_input(wildcards.subtissue)
+#     output: 
+#         'data/seqs/{subtissue}_tx.fa'
+#     shell:
+#         '''
+#         ./gffread/gffread -w {output} -g {ref_genome}  {input.gtf}
+#         '''
+
+
+# '''
+# pulled this from the trinnotate pipeline, makes a gff of the of using protein translations
+# '''
+# rule run_trans_decoder:
+#     input:
+#         'data/seqs/all_tissues.combined_tx.fa'
+#     output:
+#         'data/seqs/transdecoder_results/all_tissues.combined_transdecoderCDS.gff3',
+#         'data/seqs/transdecoder_results/transcripts.fasta.transdecoder.pep'
+#     shell:
+#         '''
+#         rm -rf TransDecoder
+#         git clone https://github.com/TransDecoder/TransDecoder.git
+#         cd TransDecoder
+#         module load {TransDecoder_version}
+#         mkdir -p ../data/seqs/transdecoder_results/
+#         ./util/gtf_genome_to_cdna_fasta.pl ../data/gtfs/all_tissues.combined.gtf ../ref/gencode_genome.fa > transcripts.fasta
+#         ./util/gtf_to_alignment_gff3.pl ../data/gtfs/all_tissues.combined.gtf > transcripts.gff3
+#         TransDecoder.LongOrfs -m 60 -t transcripts.fasta
+#         TransDecoder.Predict --single_best_only  -t transcripts.fasta
+#         ./util/cdna_alignment_orf_to_genome_orf.pl \
+#             transcripts.fasta.transdecoder.gff3 \
+#             transcripts.gff3 \
+#             transcripts.fasta > ../data/seqs/transdecoder_results/all_tissues.combined_transdecoderCDS.gff3
+#         mv transcripts.fasta.transdecoder.*  ../data/seqs/transdecoder_results/
+#         '''
+# #
+# rule clean_pep:
+#     input:
+#         'data/seqs/transdecoder_results/transcripts.fasta.transdecoder.pep'
+#     output:
+#         pep='data/seqs/transdecoder_results/best_orfs.transdecoder.pep', 
+#         meta_info='data/seqs/transdecoder_results/pep_fasta_meta_info.tsv'#, len_cor_tab='data/seqs/len_cor_tab.tsv'
+#     shell:
+#         '''
+#         python3 scripts/clean_pep.py {input} {output.pep} {output.meta_info}
+#         '''
+#                 #python3 scripts/fix_prot_seqs.py /tmp/tmpvs.fasta  {output.pep} {output.len_cor_tab}
+
+# rule process_and_annotate_master_gtf:
+#     input: 
+#         gtf = files['base_all_tissue_gtf'],
+#         gff = 'data/seqs/transdecoder_results/all_tissues.combined_transdecoderCDS.gff3',
+#         full_pep = 'data/seqs/transdecoder_results/best_orfs.transdecoder.pep'
+#     params:
+#         agat_tmp_file = 'tmp/agat/gtf_startstop_added.gff',
+#         path_to_final_gtfs = 'data/gtfs/final_tissue_gtfs/',
+#         path_to_filt_gtfs = 'data/gtfs/raw_tissue_gtfs/'
+#     output: 
+#         full_gtf = files['anno_all_tissue_gtf'],
+#         tissue_gtfs = expand('data/gtfs/final_tissue_gtfs/{subtissue}.gtf', subtissue = subtissues),
+#         tissue_det_dfs = expand('data/gtfs/final_tissue_gtfs/{subtissue}.detdf', subtissue=subtissues),
+#         classfile=files['exon_class_rdata'],                
+#         novel_loci_pep=files['novel_loci_pep'],
+#         gencode_dummy = 'data/gtfs/final_tissue_gtfs/gencode.gtf',
+#         novel_loci_txids = files['novel_loci_txids'], 
+#         novel_loci_bed = files['novel_loci_bed']
+#     shell:
+#         '''
+#         agat_sp_add_start_and_stop.pl \
+#             --gff {input.gff} --fasta {ref_genome}  \
+#             --out  {params.agat_tmp_file} 
+        
+#         module load {R_version}
+#         Rscript scripts/annotate_and_make_tissue_gtfs.R \
+#             --workingDir {working_dir} \
+#             --fileYaml {file_yaml} \
+#             --agatGff {params.agat_tmp_file}
+
+#         python3 scripts/select_entry_from_fasta.py \
+#             --infasta {input.full_pep} \
+#             --txToKeep {output.novel_loci_txids} \
+#             --outfasta {output.novel_loci_pep}
+        
+#         cp {ref_GTF} {output.gencode_dummy}
+#         '''
